@@ -1,9 +1,6 @@
 name: Build Node.js for Android
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       node_version:
@@ -11,9 +8,9 @@ on:
         required: false
         default: 'v26.2.0'
       ndk_version:
-        description: 'Android NDK version (e.g. r27c)'
+        description: 'Android NDK version (e.g. r29b)'
         required: false
-        default: 'r27c'
+        default: 'r29b'
       android_sdk_version:
         description: 'Minimum Android SDK version'
         required: false
@@ -21,361 +18,245 @@ on:
 
 env:
   NODE_VERSION: ${{ github.event.inputs.node_version || 'v26.2.0' }}
-  NDK_VERSION: ${{ github.event.inputs.ndk_version || 'r27c' }}
-  ANDROID_SDK_VERSION: ${{ github.event.inputs.android_sdk_version || '24' }}
+  NDK_VERSION:  ${{ github.event.inputs.ndk_version  || 'r29b' }}
+  ANDROID_SDK:  ${{ github.event.inputs.android_sdk_version || '24' }}
 
+# ─── Job 1: Download + cache NDK once, shared across arch jobs ───────────────
 jobs:
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Job 1: Build libnode.so (shared library for embedding)
-  # ═══════════════════════════════════════════════════════════════════════════
-  build-libnode:
+  prepare-ndk:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64, arm, x86, x86_64]
-
+    outputs:
+      ndk-cache-key: ${{ steps.ndk-key.outputs.key }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Compute cache key
+        id: ndk-key
+        run: echo "key=ndk-${{ env.NDK_VERSION }}-linux-v1" >> "$GITHUB_OUTPUT"
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 build-essential wget unzip
-
-      - name: Cache Android NDK
+      - name: Restore NDK cache
         id: cache-ndk
         uses: actions/cache@v4
         with:
-          path: android-ndk-${{ env.NDK_VERSION }}
-          key: ndk-${{ env.NDK_VERSION }}-linux
+          path: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
+          key: ${{ steps.ndk-key.outputs.key }}
 
-      - name: Download Android NDK
+      - name: Install unzip
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: sudo apt-get install -y --no-install-recommends unzip
+
+      - name: Download & extract NDK
         if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: |
-          NDK_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-          echo "Downloading NDK ${NDK_VERSION}..."
-          wget --progress=bar:force:noscroll -O "android-ndk-${NDK_VERSION}-linux.zip" "$NDK_URL"
-          unzip -q "android-ndk-${NDK_VERSION}-linux.zip"
-          rm -f "android-ndk-${NDK_VERSION}-linux.zip"
+          set -euo pipefail
+          URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          echo "::group::Download NDK ${NDK_VERSION}"
+          wget --progress=bar:force:noscroll -O ndk.zip "$URL"
+          echo "::endgroup::"
+          echo "::group::Extract NDK"
+          unzip -q ndk.zip
+          rm -f ndk.zip
+          echo "::endgroup::"
+          echo "NDK ready: $(du -sh android-ndk-${NDK_VERSION})"
 
-      - name: Clone Node.js source
+  # ─── Job 2: Clone + patch Node.js source, cache by version ────────────────
+  prepare-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Node.js source cache
+        id: cache-src
+        uses: actions/cache@v4
+        with:
+          path: node-src
+          key: node-src-${{ env.NODE_VERSION }}-v2
+
+      - name: Clone Node.js ${{ env.NODE_VERSION }}
+        if: steps.cache-src.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch "${NODE_VERSION}" https://github.com/nodejs/node.git node-src
+          set -euo pipefail
+          git clone --depth 1 --branch "${NODE_VERSION}" \
+            https://github.com/nodejs/node.git node-src
+          echo "Cloned: $(du -sh node-src)"
 
       - name: Apply Android patches
+        if: steps.cache-src.outputs.cache-hit != 'true'
         working-directory: node-src
         run: |
-          # Apply official V8 trap-handler patch if exists
-          if [ -f "android-patches/trap-handler.h.patch" ] && [ -f "deps/v8/src/trap-handler/trap-handler.h" ]; then
-            echo "Applying V8 trap-handler patch..."
-            patch -f ./deps/v8/src/trap-handler/trap-handler.h < ./android-patches/trap-handler.h.patch || true
+          set -euo pipefail
+          PATCH_DIR="../.github/scripts"
+
+          # V8 stack_trace patch — fixes backtrace on Android Bionic
+          if [ -f "$PATCH_DIR/stack_trace_posix.patch" ] && \
+             [ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]; then
+            echo "Applying stack_trace_posix.patch..."
+            patch -p1 < "$PATCH_DIR/stack_trace_posix.patch"
           fi
 
-          # Apply V8 stack_trace patch for Android Bionic
-          if [ -f "../.github/scripts/stack_trace_posix.patch" ] && [ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]; then
-            echo "Applying V8 stack_trace patch..."
-            patch -f ./deps/v8/src/base/debug/stack_trace_posix.cc < ../.github/scripts/stack_trace_posix.patch || true
+          # V8 trap-handler patch (optional, skip if missing)
+          if [ -f "android-patches/trap-handler.h.patch" ] && \
+             [ -f "deps/v8/src/trap-handler/trap-handler.h" ]; then
+            echo "Applying trap-handler.h.patch..."
+            patch -f deps/v8/src/trap-handler/trap-handler.h \
+              < android-patches/trap-handler.h.patch || true
           fi
 
-          # Apply v8config.h patch (allow ARM target on x64 host)
-          if [ -f "../.github/scripts/v8config-h.patch" ] && [ -f "deps/v8/include/v8config.h" ]; then
-            echo "Applying v8config.h patch..."
-            patch -f ./deps/v8/include/v8config.h < ../.github/scripts/v8config-h.patch || true
+          # v8config.h patch — allow ARM target on x64 host
+          if [ -f "$PATCH_DIR/v8config-h.patch" ] && \
+             [ -f "deps/v8/include/v8config.h" ]; then
+            echo "Applying v8config-h.patch..."
+            patch -p1 < "$PATCH_DIR/v8config-h.patch"
           fi
 
-      - name: Configure libnode.so for ${{ matrix.arch }}
-        working-directory: node-src
-        run: |
-          NDK_DIR="$(pwd)/../android-ndk-${NDK_VERSION}"
-
-          # Map arch to Node.js values
-          case "${{ matrix.arch }}" in
-            arm64)   DEST_CPU="arm64"; TOOLCHAIN_PREFIX="aarch64-linux-android"; GYP_ARCH="arm64" ;;
-            arm)     DEST_CPU="arm";   TOOLCHAIN_PREFIX="armv7a-linux-androideabi"; GYP_ARCH="arm" ;;
-            x86)     DEST_CPU="ia32"; TOOLCHAIN_PREFIX="i686-linux-android"; GYP_ARCH="ia32" ;;
-            x86_64)  DEST_CPU="x64";  TOOLCHAIN_PREFIX="x86_64-linux-android"; GYP_ARCH="x64" ;;
-          esac
-
-          TOOLCHAIN_PATH="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64"
-
-          export PATH="${TOOLCHAIN_PATH}/bin:$PATH"
-          export CC="${TOOLCHAIN_PATH}/bin/${TOOLCHAIN_PREFIX}${ANDROID_SDK_VERSION}-clang"
-          export CXX="${TOOLCHAIN_PATH}/bin/${TOOLCHAIN_PREFIX}${ANDROID_SDK_VERSION}-clang++"
-          export CC_host=gcc
-          export CXX_host=g++
-
-          export GYP_DEFINES="target_arch=${GYP_ARCH} v8_target_arch=${GYP_ARCH} android_target_arch=${GYP_ARCH} host_os=linux OS=android android_ndk_path=${NDK_DIR}"
-
-          echo "Configuring libnode.so: arch=${{ matrix.arch }}, dest-cpu=${DEST_CPU}, shared=yes"
-
-          ./configure \
-            --dest-cpu="${DEST_CPU}" \
-            --dest-os=android \
-            --cross-compiling \
-            --shared \
-            --openssl-no-asm
-
-      - name: Build libnode.so
-        working-directory: node-src
-        run: make -j$(nproc)
-
-      - name: Collect artifacts
-        working-directory: node-src
-        run: |
-          OUT_DIR="$(pwd)/../output/libnode-${NODE_VERSION#v}-android-${{ matrix.arch }}"
-          mkdir -p "$OUT_DIR/lib" "$OUT_DIR/include/node" "$OUT_DIR/npm"
-
-          # ── libnode.so ──
-          echo "=== Collecting libnode.so ==="
-          find out/Release -name "libnode.so" -exec cp -v {} "$OUT_DIR/lib/" \; 2>/dev/null || \
-          find out/ -name "libnode.so" -exec cp -v {} "$OUT_DIR/lib/" \; 2>/dev/null || \
-          echo "WARNING: libnode.so not found!"
-
-          # Also copy libc++_shared.so if present
-          NDK_DIR="$(pwd)/../android-ndk-${NDK_VERSION}"
-          case "${{ matrix.arch }}" in
-            arm64)  SYSROOT_LIB="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android" ;;
-            arm)    SYSROOT_LIB="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi" ;;
-            x86)    SYSROOT_LIB="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/i686-linux-android" ;;
-            x86_64) SYSROOT_LIB="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android" ;;
-          esac
-          if [ -f "${SYSROOT_LIB}/libc++_shared.so" ]; then
-            cp -v "${SYSROOT_LIB}/libc++_shared.so" "$OUT_DIR/lib/"
-          fi
-
-          # ── Headers ──
-          echo "=== Collecting headers ==="
-          for header in \
-            src/node.h src/node_version.h src/node_api.h \
-            src/node_api_types.h src/js_native_api.h \
-            src/js_native_api_types.h src/node_buffer.h \
-            src/node_object_wrap.h src/node_version.h; do
-            [ -f "$header" ] && cp -v "$header" "$OUT_DIR/include/node/"
-          done
-
-          # deps headers
-          for dep in uv llhttp http_parser cares nghttp2 openssl zlib; do
-            if [ -d "deps/$dep/include" ]; then
-              cp -r "deps/$dep/include"/* "$OUT_DIR/include/node/" 2>/dev/null || true
-            fi
-          done
-
-          # ── npm bundle (JS only, usable with separate node binary) ──
-          echo "=== Bundling npm ==="
-          if [ -d "deps/npm" ]; then
-            tar czf "$OUT_DIR/npm/npm-bundle.tar.gz" -C deps npm/
-            echo "npm bundled: $(du -sh "$OUT_DIR/npm/npm-bundle.tar.gz" | cut -f1)"
-          fi
-
-          # Also copy corepack if available
-          if [ -d "deps/corepack" ]; then
-            tar czf "$OUT_DIR/npm/corepack-bundle.tar.gz" -C deps corepack/
-          fi
-
-          echo "=== Output ==="
-          ls -lhR "$OUT_DIR/"
-
-      - name: Upload libnode.so
-        uses: actions/upload-artifact@v4
-        with:
-          name: libnode-${{ matrix.arch }}-${{ env.NODE_VERSION }}
-          path: output/libnode-${{ env.NODE_VERSION }}-android-${{ matrix.arch }}/lib/
-          retention-days: 90
-
-      - name: Upload headers
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-headers-${{ matrix.arch }}-${{ env.NODE_VERSION }}
-          path: output/libnode-${{ env.NODE_VERSION }}-android-${{ matrix.arch }}/include/
-          retention-days: 90
-
-      - name: Upload npm bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-bundle-${{ matrix.arch }}-${{ env.NODE_VERSION }}
-          path: output/libnode-${{ env.NODE_VERSION }}-android-${{ matrix.arch }}/npm/
-          retention-days: 90
-
-      - name: Upload full package
-        uses: actions/upload-artifact@v4
-        with:
-          name: libnode-android-${{ matrix.arch }}-${{ env.NODE_VERSION }}
-          path: output/libnode-${{ env.NODE_VERSION }}-android-${{ matrix.arch }}/
-          retention-days: 90
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Job 2: Build full node binary + npm (for running on Android device)
-  # ═══════════════════════════════════════════════════════════════════════════
-  build-node:
+  # ─── Job 3: Build per arch ─────────────────────────────────────────────────
+  build:
+    needs: [prepare-ndk, prepare-source]
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120   # 2 h — reasonable upper bound with ccache
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64, arm, x86, x86_64]
+        arch: [arm64, arm]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 build-essential wget unzip
-
-      - name: Cache Android NDK
-        id: cache-ndk
+      # ── Restore pre-patched source ──────────────────────────────────────────
+      - name: Restore Node.js source cache
         uses: actions/cache@v4
         with:
-          path: android-ndk-${{ env.NDK_VERSION }}
-          key: ndk-${{ env.NDK_VERSION }}-linux
+          path: node-src
+          key: node-src-${{ env.NODE_VERSION }}-v2
 
-      - name: Download Android NDK
-        if: steps.cache-ndk.outputs.cache-hit != 'true'
+      # ── Restore NDK ─────────────────────────────────────────────────────────
+      - name: Restore NDK cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
+          key: ${{ needs.prepare-ndk.outputs.ndk-cache-key }}
+
+      # ── ccache — the biggest win ─────────────────────────────────────────────
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: node-${{ env.NODE_VERSION }}-android-${{ matrix.arch }}
+          restore-keys: |
+            node-${{ env.NODE_VERSION }}-android-${{ matrix.arch }}
+            node-android-${{ matrix.arch }}
+          max-size: 3G
+          append-timestamp: false
+
+      - name: Install build dependencies
         run: |
-          NDK_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-          wget --progress=bar:force:noscroll -O "android-ndk-${NDK_VERSION}-linux.zip" "$NDK_URL"
-          unzip -q "android-ndk-${NDK_VERSION}-linux.zip"
-          rm -f "android-ndk-${NDK_VERSION}-linux.zip"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip build-essential ccache
 
-      - name: Clone Node.js source
+      # ── Configure ───────────────────────────────────────────────────────────
+      - name: Configure Node.js for Android ${{ matrix.arch }}
+        working-directory: node-src
+        env:
+          CFLAGS:   "-O2 -fstack-protector-strong"
+          CXXFLAGS: "-O2 -fstack-protector-strong"
+          LDFLAGS:  "-Wl,--as-needed"
+          # Route host compilers through ccache
+          CC_host:  "ccache gcc"
+          CXX_host: "ccache g++"
         run: |
-          git clone --depth 1 --branch "${NODE_VERSION}" https://github.com/nodejs/node.git node-src
+          set -euo pipefail
+          NDK_DIR="${GITHUB_WORKSPACE}/android-ndk-${NDK_VERSION}"
+          echo "NDK: $NDK_DIR | SDK: $ANDROID_SDK | arch: ${{ matrix.arch }}"
+          ./android-configure "$NDK_DIR" "$ANDROID_SDK" "${{ matrix.arch }}"
 
-      - name: Apply Android patches
+      # ── Compile ─────────────────────────────────────────────────────────────
+      - name: Build Node.js
         working-directory: node-src
         run: |
-          if [ -f "android-patches/trap-handler.h.patch" ] && [ -f "deps/v8/src/trap-handler/trap-handler.h" ]; then
-            patch -f ./deps/v8/src/trap-handler/trap-handler.h < ./android-patches/trap-handler.h.patch || true
+          set -euo pipefail
+          JOBS=$(nproc)
+          echo "Building with $JOBS parallel jobs + ccache..."
+          ccache -z   # reset stats before build
+          make -j"$JOBS" V=0   # V=0 = quiet output, faster terminal I/O
+          ccache -s   # print hit/miss stats
+
+      # ── Install ─────────────────────────────────────────────────────────────
+      - name: Install to staging dir
+        working-directory: node-src
+        run: |
+          set -euo pipefail
+          STAGE="${GITHUB_WORKSPACE}/stage/nodejs-android-${{ matrix.arch }}"
+          mkdir -p "$STAGE"
+          make DESTDIR="$STAGE" PREFIX="" install
+
+          # Ensure npm module exists (fallback from deps/)
+          if [ ! -d "$STAGE/lib/node_modules/npm" ] && [ -d "deps/npm" ]; then
+            mkdir -p "$STAGE/lib/node_modules"
+            cp -r deps/npm "$STAGE/lib/node_modules/"
           fi
-          if [ -f "../.github/scripts/stack_trace_posix.patch" ] && [ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]; then
-            patch -f ./deps/v8/src/base/debug/stack_trace_posix.cc < ../.github/scripts/stack_trace_posix.patch || true
-          fi
 
-      - name: Configure node binary for ${{ matrix.arch }}
-        working-directory: node-src
-        run: |
-          NDK_DIR="$(pwd)/../android-ndk-${NDK_VERSION}"
-          export CC_host=gcc
-          export CXX_host=g++
-
-          echo "Configuring node binary: arch=${{ matrix.arch }}"
-          ./android-configure "$NDK_DIR" "$ANDROID_SDK_VERSION" "${{ matrix.arch }}"
-
-      - name: Build node binary
-        working-directory: node-src
-        run: make -j$(nproc)
-
-      - name: Install and package
-        working-directory: node-src
-        run: |
-          OUTPUT_DIR="$(pwd)/../output/nodejs-${NODE_VERSION#v}-android-${{ matrix.arch }}"
-          mkdir -p "$OUTPUT_DIR"
-          make DESTDIR="$OUTPUT_DIR" PREFIX="" install
-
-          # Copy npm from deps if not installed
-          if [ ! -d "$OUTPUT_DIR/lib/node_modules/npm" ] && [ -d "deps/npm" ]; then
-            mkdir -p "$OUTPUT_DIR/lib/node_modules"
-            cp -r deps/npm "$OUTPUT_DIR/lib/node_modules/"
-          fi
-
-          # Copy corepack
+          # Copy corepack if present
           if [ -d "deps/corepack" ]; then
-            mkdir -p "$OUTPUT_DIR/lib/node_modules"
-            cp -r deps/corepack "$OUTPUT_DIR/lib/node_modules/" 2>/dev/null || true
+            mkdir -p "$STAGE/lib/node_modules"
+            cp -r deps/corepack "$STAGE/lib/node_modules/" 2>/dev/null || true
           fi
 
-      - name: Setup Android wrappers
-        run: |
-          SRC_DIR="output/nodejs-${NODE_VERSION#v}-android-${{ matrix.arch }}"
-          PKG_DIR="output/nodejs-android-${{ matrix.arch }}"
-          mkdir -p "$PKG_DIR/bin" "$PKG_DIR/lib"
+          # Copy libc++_shared.so next to binary for easy LD_LIBRARY_PATH usage
+          LIBCXX=$(find "${GITHUB_WORKSPACE}/android-ndk-${NDK_VERSION}" \
+            -name "libc++_shared.so" | grep -E "/${{ matrix.arch == 'arm64' && 'aarch64' || 'arm' }}-linux-android/" | head -1)
+          if [ -n "$LIBCXX" ]; then
+            cp "$LIBCXX" "$STAGE/bin/"
+            echo "Copied libc++_shared.so from NDK"
+          fi
 
-          cp -r "$SRC_DIR/bin"/* "$PKG_DIR/bin/"
-          cp -r "$SRC_DIR/lib"/* "$PKG_DIR/lib/"
+          echo "--- Installed binaries ---"
+          ls -lh "$STAGE/bin/"
+
+      # ── Package ─────────────────────────────────────────────────────────────
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          STAGE="${GITHUB_WORKSPACE}/stage/nodejs-android-${{ matrix.arch }}"
+          PKG="${GITHUB_WORKSPACE}/pkg/nodejs-android-${{ matrix.arch }}"
+          mkdir -p "$PKG/bin" "$PKG/lib"
+
+          cp -r "$STAGE/bin"/. "$PKG/bin/"
+          cp -r "$STAGE/lib"/. "$PKG/lib/"
 
           # Android wrapper scripts
-          cp .github/scripts/npm-android.sh "$PKG_DIR/bin/npm-android"
-          cp .github/scripts/npx-android.sh "$PKG_DIR/bin/npx-android"
-          cp .github/scripts/install-android.sh "$PKG_DIR/install.sh"
-          chmod +x "$PKG_DIR/bin/npm-android" "$PKG_DIR/bin/npx-android" "$PKG_DIR/install.sh"
+          cp .github/scripts/npm-android.sh  "$PKG/bin/npm"
+          cp .github/scripts/npx-android.sh  "$PKG/bin/npx"
+          chmod 755 "$PKG/bin/npm" "$PKG/bin/npx"
+
+          # Install helper
+          cp .github/scripts/install-android.sh "$PKG/install.sh"
+          chmod 755 "$PKG/install.sh"
 
           # README
-          cat > "$PKG_DIR/README.txt" << 'READEOF'
-Node.js for Android
-====================
+          cat > "$PKG/README.txt" <<EOF
+          Node.js ${NODE_VERSION} for Android (${{ matrix.arch }})
+          =============================================
 
-Installation via ADB:
-  adb push . /data/local/tmp/nodejs/
-  adb shell chmod 755 /data/local/tmp/nodejs/bin/*
+          Quick install via ADB:
+            adb push . /data/local/tmp/nodejs/
+            adb shell sh /data/local/tmp/nodejs/install.sh
 
-Running Node.js:
-  adb shell
-  export HOME=/data/local/tmp
-  export LD_LIBRARY_PATH=/data/local/tmp/nodejs/bin:$LD_LIBRARY_PATH
-  /data/local/tmp/nodejs/bin/node --version
+          Manual install:
+            adb shell
+            export HOME=/data/local/tmp
+            export LD_LIBRARY_PATH=/data/local/tmp/nodejs/bin:\$LD_LIBRARY_PATH
+            /data/local/tmp/nodejs/bin/node --version
 
-Running npm:
-  /data/local/tmp/nodejs/bin/npm-android install <package>
-READEOF
+          npm/npx usage:
+            /data/local/tmp/nodejs/bin/npm install <package>
+            /data/local/tmp/nodejs/bin/npx <tool>
+          EOF
 
-          echo "=== Package ready ==="
-          ls -lh "$PKG_DIR/bin/"
+          echo "--- Package contents ---"
+          ls -lh "$PKG/bin/"
 
-      - name: Upload node binary
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nodejs-android-${{ matrix.arch }}-${{ env.NODE_VERSION }}
-          path: output/nodejs-android-${{ matrix.arch }}/
+          name: nodejs-android-${{ matrix.arch }}
+          path: pkg/nodejs-android-${{ matrix.arch }}/
           retention-days: 90
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Job 3: Create GitHub Release on tag push
-  # ═══════════════════════════════════════════════════════════════════════════
-  release:
-    needs: [build-libnode, build-node]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-
-      - name: Package releases
-        run: |
-          mkdir -p release
-          cd artifacts
-
-          # Package libnode bundles
-          for dir in libnode-android-*; do
-            [ -d "$dir" ] || continue
-            arch=$(echo "$dir" | sed 's/libnode-android-//;s/-v.*//')
-            tar czf "../release/libnode-android-${arch}-${NODE_VERSION}.tar.gz" -C "$dir" .
-          done
-
-          # Package node binary bundles
-          for dir in nodejs-android-*; do
-            [ -d "$dir" ] || continue
-            [[ "$dir" == libnode-* ]] && continue
-            arch=$(echo "$dir" | sed 's/nodejs-android-//;s/-v.*//')
-            tar czf "../release/nodejs-android-${arch}-${NODE_VERSION}.tar.gz" -C "$dir" .
-          done
-
-          # Combined archive
-          tar czf "../release/nodejs-android-all-${NODE_VERSION}.tar.gz" .
-
-          echo "=== Release files ==="
-          ls -lh ../release/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release/*.tar.gz
-          generate_release_notes: true
+          compression-level: 6
