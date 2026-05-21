@@ -62,11 +62,18 @@ jobs:
           echo "Cloning Node.js ${NODE_VERSION}..."
           git clone --depth 1 --branch "${NODE_VERSION}" https://github.com/nodejs/node.git node-src
 
-          # Apply V8 trap-handler patch for Android if available
           cd node-src
+
+          # Apply V8 trap-handler patch for Android if available
           if [ -f "android-patches/trap-handler.h.patch" ] && [ -f "deps/v8/src/trap-handler/trap-handler.h" ]; then
             echo "Applying V8 trap-handler patch..."
             patch -f ./deps/v8/src/trap-handler/trap-handler.h < ./android-patches/trap-handler.h.patch || true
+          fi
+
+          # Apply V8 stack_trace patch (fix backtrace on Android Bionic)
+          if [ -f "../.github/scripts/stack_trace_posix.patch" ] && [ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]; then
+            echo "Applying V8 stack_trace patch..."
+            patch -f ./deps/v8/src/base/debug/stack_trace_posix.cc < ../.github/scripts/stack_trace_posix.patch || true
           fi
 
       - name: Configure for Android ${{ matrix.arch }}
