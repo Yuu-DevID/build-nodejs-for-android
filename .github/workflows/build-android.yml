@@ -81,6 +81,11 @@ jobs:
         run: |
           NDK_DIR="$(pwd)/../android-ndk-${NDK_VERSION}"
           echo "Configuring for arch=${{ matrix.arch }}, NDK=${NDK_DIR}, SDK=${ANDROID_SDK_VERSION}"
+
+          # Set host compiler so host tools (icupkg, mksnapshot, etc.) compile for x86_64
+          export CC_host=gcc
+          export CXX_host=g++
+
           ./android-configure "$NDK_DIR" "$ANDROID_SDK_VERSION" "${{ matrix.arch }}"
 
       - name: Build Node.js
