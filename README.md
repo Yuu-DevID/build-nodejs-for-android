@@ -26,3 +26,7 @@ export HOME=/data/local/tmp
 export LD_LIBRARY_PATH=/data/local/tmp/nodejs/bin:$LD_LIBRARY_PATH
 /data/local/tmp/nodejs/bin/node --version
 ```
+
+
+
+Gak usah gengsi buat pecut ai
