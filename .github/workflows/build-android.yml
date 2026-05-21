@@ -1,0 +1,152 @@
+name: Build Node.js for Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: 'Node.js version tag (e.g. v26.2.0)'
+        required: false
+        default: 'v26.2.0'
+      ndk_version:
+        description: 'Android NDK version (e.g. r28b)'
+        required: false
+        default: 'r28b'
+      android_sdk_version:
+        description: 'Minimum Android SDK version'
+        required: false
+        default: '24'
+
+env:
+  NODE_VERSION: ${{ github.event.inputs.node_version || 'v26.2.0' }}
+  NDK_VERSION: ${{ github.event.inputs.ndk_version || 'r28b' }}
+  ANDROID_SDK_VERSION: ${{ github.event.inputs.android_sdk_version || '24' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, arm]
+
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 build-essential wget unzip
+
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: android-ndk-${{ env.NDK_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}-linux
+
+      - name: Download Android NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          NDK_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          echo "Downloading NDK ${NDK_VERSION}..."
+          wget --progress=bar:force:noscroll -O "android-ndk-${NDK_VERSION}-linux.zip" "$NDK_URL"
+          echo "Extracting NDK..."
+          unzip -q "android-ndk-${NDK_VERSION}-linux.zip"
+          rm -f "android-ndk-${NDK_VERSION}-linux.zip"
+          echo "NDK ready at $(pwd)/android-ndk-${NDK_VERSION}"
+
+      - name: Clone Node.js source
+        run: |
+          echo "Cloning Node.js ${NODE_VERSION}..."
+          git clone --depth 1 --branch "${NODE_VERSION}" https://github.com/nodejs/node.git node-src
+
+          # Apply V8 trap-handler patch for Android if available
+          cd node-src
+          if [ -f "android-patches/trap-handler.h.patch" ] && [ -f "deps/v8/src/trap-handler/trap-handler.h" ]; then
+            echo "Applying V8 trap-handler patch..."
+            patch -f ./deps/v8/src/trap-handler/trap-handler.h < ./android-patches/trap-handler.h.patch || true
+          fi
+
+      - name: Configure for Android ${{ matrix.arch }}
+        working-directory: node-src
+        run: |
+          NDK_DIR="$(pwd)/../android-ndk-${NDK_VERSION}"
+          echo "Configuring for arch=${{ matrix.arch }}, NDK=${NDK_DIR}, SDK=${ANDROID_SDK_VERSION}"
+          ./android-configure "$NDK_DIR" "$ANDROID_SDK_VERSION" "${{ matrix.arch }}"
+
+      - name: Build Node.js
+        working-directory: node-src
+        run: make -j$(nproc)
+
+      - name: Install to output directory
+        working-directory: node-src
+        run: |
+          OUTPUT_DIR="$(pwd)/../output/nodejs-${NODE_VERSION#v}-android-${{ matrix.arch }}"
+          mkdir -p "$OUTPUT_DIR"
+          make DESTDIR="$OUTPUT_DIR" PREFIX="" install
+
+          # Copy npm/npx from deps if not already installed
+          if [ ! -d "$OUTPUT_DIR/lib/node_modules/npm" ] && [ -d "deps/npm" ]; then
+            mkdir -p "$OUTPUT_DIR/lib/node_modules"
+            cp -r deps/npm "$OUTPUT_DIR/lib/node_modules/"
+          fi
+
+          # Copy corepack if available
+          if [ -d "deps/corepack" ]; then
+            mkdir -p "$OUTPUT_DIR/lib/node_modules"
+            cp -r deps/corepack "$OUTPUT_DIR/lib/node_modules/" 2>/dev/null || true
+          fi
+
+          echo "Installed files:"
+          ls -lh "$OUTPUT_DIR/bin/"
+
+      - name: Setup Android wrappers and package
+        run: |
+          SRC_DIR="output/nodejs-${NODE_VERSION#v}-android-${{ matrix.arch }}"
+          PKG_DIR="output/nodejs-android-${{ matrix.arch }}"
+          mkdir -p "$PKG_DIR/bin" "$PKG_DIR/lib"
+
+          # Copy bin and lib from build output
+          cp -r "$SRC_DIR/bin"/* "$PKG_DIR/bin/"
+          cp -r "$SRC_DIR/lib"/* "$PKG_DIR/lib/"
+
+          # Copy Android wrapper scripts
+          cp .github/scripts/npm-android.sh "$PKG_DIR/bin/npm-android"
+          cp .github/scripts/npx-android.sh "$PKG_DIR/bin/npx-android"
+          chmod +x "$PKG_DIR/bin/npm-android" "$PKG_DIR/bin/npx-android"
+
+          # Copy install script
+          cp .github/scripts/install-android.sh "$PKG_DIR/install.sh"
+          chmod +x "$PKG_DIR/install.sh"
+
+          # Generate README
+          {
+            echo "Node.js ${NODE_VERSION} for Android (${{ matrix.arch }})"
+            echo "============================================="
+            echo ""
+            echo "Installation via ADB:"
+            echo "  adb push . /data/local/tmp/nodejs/"
+            echo "  adb shell chmod 755 /data/local/tmp/nodejs/bin/*"
+            echo ""
+            echo "Running Node.js:"
+            echo "  adb shell"
+            echo "  export HOME=/data/local/tmp"
+            echo '  export LD_LIBRARY_PATH=/data/local/tmp/nodejs/bin:$LD_LIBRARY_PATH'
+            echo "  /data/local/tmp/nodejs/bin/node --version"
+            echo ""
+            echo "Running npm:"
+            echo "  /data/local/tmp/nodejs/bin/npm-android install <package>"
+          } > "$PKG_DIR/README.txt"
+
+          echo "Package ready at $PKG_DIR"
+          ls -lh "$PKG_DIR/bin/node"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-android-${{ matrix.arch }}
+          path: output/nodejs-android-${{ matrix.arch }}/
+          retention-days: 90
+          compression-level: 6
