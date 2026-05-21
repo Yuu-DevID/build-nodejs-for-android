@@ -1,0 +1,15 @@
+diff --git a/deps/v8/include/v8config.h b/deps/v8/include/v8config.h
+index d8978c286b9..085ada2da58 100644
+--- a/deps/v8/include/v8config.h
++++ b/deps/v8/include/v8config.h
+@@ -991,8 +991,8 @@ V8 shared library set USING_V8_SHARED.
+      !(V8_HOST_ARCH_X64 && V8_HOST_ARCH_32_BIT))
+ #error Target architecture x32 is only supported on x64 host with x32 support
+ #endif
+-#if (V8_TARGET_ARCH_ARM && !(V8_HOST_ARCH_IA32 || V8_HOST_ARCH_ARM))
+-#error Target architecture arm is only supported on arm and ia32 host
++#if (V8_TARGET_ARCH_ARM && !(V8_HOST_ARCH_IA32 || V8_HOST_ARCH_ARM || V8_HOST_ARCH_X64))
++#error Target architecture arm is only supported on arm, ia32, and x64 host
+ #endif
+ #if (V8_TARGET_ARCH_ARM64 && !(V8_HOST_ARCH_X64 || V8_HOST_ARCH_ARM64))
+ #error Target architecture arm64 is only supported on arm64 and x64 host
