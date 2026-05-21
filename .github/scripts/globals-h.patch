@@ -1,0 +1,17 @@
+diff --git a/deps/v8/src/common/globals.h b/deps/v8/src/common/globals.h
+index 0e0cfcb30ea..f947c7c2f6e 100644
+--- a/deps/v8/src/common/globals.h
++++ b/deps/v8/src/common/globals.h
+@@ -322,7 +322,11 @@ const size_t kShortBuiltinCallsOldSpaceSizeThreshold = size_t{2} * GB;
+ 
+ // Determine whether tagged pointers are 8 bytes (used in Torque layouts for
+ // choosing where to insert padding).
+-#if V8_TARGET_ARCH_64_BIT && !defined(V8_COMPRESS_POINTERS)
++// Use __SIZEOF_POINTER__ (compiler built-in) instead of V8_TARGET_ARCH_64_BIT
++// so that host tools compiled for x86_64 get the correct value when
++// cross-compiling for 32-bit targets (e.g. Android ARM).
++#if defined(__SIZEOF_POINTER__) && (__SIZEOF_POINTER__ == 8) && \
++    !defined(V8_COMPRESS_POINTERS)
+ #define TAGGED_SIZE_8_BYTES true
+ #else
+ #define TAGGED_SIZE_8_BYTES false

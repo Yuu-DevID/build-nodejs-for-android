@@ -68,7 +68,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node-src
-          key: node-src-${{ env.NODE_VERSION }}-v2
+          key: node-src-${{ env.NODE_VERSION }}-v3
 
       - name: Clone Node.js ${{ env.NODE_VERSION }}
         if: steps.cache-src.outputs.cache-hit != 'true'
@@ -107,6 +107,13 @@ jobs:
             patch -p1 < "$PATCH_DIR/v8config-h.patch"
           fi
 
+          # globals.h patch — fix TAGGED_SIZE_8_BYTES for cross-compilation
+          if [ -f "$PATCH_DIR/globals-h.patch" ] && \
+             [ -f "deps/v8/src/common/globals.h" ]; then
+            echo "Applying globals-h.patch..."
+            patch -p1 < "$PATCH_DIR/globals-h.patch"
+          fi
+
   # ─── Job 3: Build per arch ─────────────────────────────────────────────────
   build:
     needs: [prepare-ndk, prepare-source]
@@ -125,7 +132,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node-src
-          key: node-src-${{ env.NODE_VERSION }}-v2
+          key: node-src-${{ env.NODE_VERSION }}-v3
 
       # ── Restore NDK ─────────────────────────────────────────────────────────
       - name: Restore NDK cache
