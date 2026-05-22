@@ -2,209 +2,133 @@
 set -euo pipefail
 
 # ─────────────────────────────────────────────
-# Configuration
+# Configuration — semua bisa di-override via env
 # ─────────────────────────────────────────────
 NODE_VERSION="${NODE_VERSION:-26.2.0}"
 ME="node-v${NODE_VERSION}"
-NDK="${NDK:-/github/build-nodejs/android-ndk-r29}"
-ENVHOST="${ENVHOST:-linux-x86_64}"
-ENVTARGET="${ENVTARGET:-aarch64-linux-android}"
-ENVANDROIDVER="${ENVANDROIDVER:-24}"
+
+# GitHub Actions Ubuntu 22.04 sudah punya NDK pre-installed
+NDK="${NDK:-/usr/local/lib/android/sdk/ndk/29.0.14206865}"
+ANDROID_SDK_VER="${ANDROID_SDK_VER:-24}"
+ARCH="${ARCH:-arm64}"        # arm64 | arm | x86 | x86_64
 DIST_DIR="${DIST_DIR:-/output}"
-
-MEDIR="$(cd "$(dirname "$0")"; pwd)"
-COMPILERDIR="$NDK/toolchains/llvm/prebuilt/$ENVHOST/bin"
+WORKDIR="${WORKDIR:-/tmp/node-build}"
+JOBS="${JOBS:-$(nproc)}"
 
 # ─────────────────────────────────────────────
-# Resolve arch params from ENVTARGET
+# Validate
 # ─────────────────────────────────────────────
-case "$ENVTARGET" in
-  aarch64-linux-android)
-    ARCH="arm64"
-    DEST_CPU="arm64"
-    ;;
-  armv7a-linux-androideabi)
-    ARCH="arm"
-    DEST_CPU="arm"
-    ;;
-  i686-linux-android)
-    ARCH="ia32"
-    DEST_CPU="ia32"
-    ;;
-  x86_64-linux-android)
-    ARCH="x64"
-    DEST_CPU="x64"
-    ;;
-  *)
-    echo "[ERROR] Unknown ENVTARGET: $ENVTARGET"
-    exit 1
-    ;;
+if [[ ! -d "$NDK" ]]; then
+  echo "[ERROR] NDK not found: $NDK"
+  echo "        Set env var NDK= ke path yang benar."
+  echo "        Available NDK di runner:"
+  ls /usr/local/lib/android/sdk/ndk/ 2>/dev/null || true
+  exit 1
+fi
+
+if [[ "$ANDROID_SDK_VER" -lt 24 ]]; then
+  echo "[ERROR] Node.js v22+ butuh Android SDK >= 24 (got $ANDROID_SDK_VER)"
+  exit 1
+fi
+
+# Normalize arch alias
+case "$ARCH" in
+  aarch64) ARCH="arm64" ;;
+  x64)     ARCH="x86_64" ;;
 esac
 
 echo "======================================"
 echo " Building Node.js v${NODE_VERSION}"
-echo " Target : $ENVTARGET ($ARCH)"
-echo " NDK    : $NDK"
-echo " Output : $DIST_DIR"
+echo " Arch      : $ARCH"
+echo " SDK level : $ANDROID_SDK_VER"
+echo " NDK       : $NDK"
+echo " Jobs      : $JOBS"
+echo " Output    : $DIST_DIR"
 echo "======================================"
 
 # ─────────────────────────────────────────────
-# Export cross-compile toolchain
+# Download / reuse source tarball
 # ─────────────────────────────────────────────
-export CC="$COMPILERDIR/${ENVTARGET}${ENVANDROIDVER}-clang"
-export CXX="$COMPILERDIR/${ENVTARGET}${ENVANDROIDVER}-clang++"
-export LD="$COMPILERDIR/llvm-lld"
-export AS="$COMPILERDIR/$ENVTARGET-as"
-export AR="$COMPILERDIR/llvm-ar"
-export STRIP="$COMPILERDIR/llvm-strip"
-export OBJCOPY="$COMPILERDIR/llvm-objcopy"
-export OBJDUMP="$COMPILERDIR/llvm-objdump"
-export RANLIB="$COMPILERDIR/llvm-ranlib"
-export NM="$COMPILERDIR/llvm-nm"
-export STRINGS="$COMPILERDIR/llvm-strings"
-export READELF="$COMPILERDIR/llvm-readelf"
-
-# For armv7a the clang binary name uses a slightly different pattern
-if [[ "$ENVTARGET" == "armv7a-linux-androideabi" ]]; then
-  export CC="$COMPILERDIR/armv7a-linux-androideabi${ENVANDROIDVER}-clang"
-  export CXX="$COMPILERDIR/armv7a-linux-androideabi${ENVANDROIDVER}-clang++"
-fi
-
-# Verify toolchain exists
-if [[ ! -f "$CC" ]]; then
-  echo "[ERROR] Compiler not found: $CC"
-  echo "        Check NDK path and ENVTARGET/ENVANDROIDVER values."
-  exit 1
-fi
-
-# Host compilers (system gcc, already installed in Docker image)
-export CC_host="$(which gcc)"
-export CXX_host="$(which g++)"
-export AR_host="$(which ar)"
-export RANLIB_host="$(which ranlib)"
-
-# ─────────────────────────────────────────────
-# Download source
-# ─────────────────────────────────────────────
-TARBALL="$ME.tar.gz"
-TARBALL_URL="https://nodejs.org/dist/v${NODE_VERSION}/${TARBALL}"
-WORKDIR="/tmp/node-build"
-
 mkdir -p "$WORKDIR"
-cd "$WORKDIR"
+TARBALL="$WORKDIR/$ME.tar.gz"
 
 if [[ ! -f "$TARBALL" ]]; then
-  echo "[*] Downloading $TARBALL_URL ..."
-  curl -fL --retry 3 -o "$TARBALL" "$TARBALL_URL"
+  echo "[*] Downloading Node.js v${NODE_VERSION}..."
+  curl -fL --retry 3 \
+    -o "$TARBALL" \
+    "https://nodejs.org/dist/v${NODE_VERSION}/${ME}.tar.gz"
 fi
 
 echo "[*] Extracting source..."
+cd "$WORKDIR"
 rm -rf "$ME"
 tar -xzf "$TARBALL"
 cd "$ME"
 
 # ─────────────────────────────────────────────
-# GYP defines
+# Patch trap-handler sebelum configure
+# (Node menyediakan patch resmi via android-patches/)
 # ─────────────────────────────────────────────
-export GYP_DEFINES="target_arch=$ARCH"
-GYP_DEFINES+=" v8_target_arch=$ARCH"
-GYP_DEFINES+=" android_target_arch=$ARCH"
-GYP_DEFINES+=" host_os=linux OS=android"
-GYP_DEFINES+=" android_ndk_path=$NDK"
-export GYP_DEFINES
+echo "[*] Applying android patches..."
+python3 android-configure patch 2>/dev/null || true
 
 # ─────────────────────────────────────────────
-# Configure
+# Configure via android-configure resmi Node.js
+# Format: android-configure <NDK_PATH> <SDK_VER> <ARCH>
+# android-configure juga set GYP_DEFINES + CC/CXX otomatis
 # ─────────────────────────────────────────────
-echo "[*] Running configure..."
-./configure \
-  --prefix="$DIST_DIR/$ME-$ARCH" \
-  --dest-cpu="$DEST_CPU" \
-  --dest-os=android \
-  --openssl-no-asm \
-  --cross-compiling \
-  --shared
+echo "[*] Running android-configure $NDK $ANDROID_SDK_VER $ARCH ..."
+python3 android-configure "$NDK" "$ANDROID_SDK_VER" "$ARCH"
 
 # ─────────────────────────────────────────────
-# V8 patches for Android cross-compilation
+# Post-configure patch: epoll linkage untuk libuv
 # ─────────────────────────────────────────────
-
-PATCH_DIR="$MEDIR/.github/scripts"
-
-# V8 stack_trace patch — fixes backtrace on Android Bionic
-if [[ -f "$PATCH_DIR/stack_trace_posix.patch" ]] && \
-   [[ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]]; then
-  echo "[*] Applying stack_trace_posix.patch..."
-  patch -p1 < "$PATCH_DIR/stack_trace_posix.patch"
-fi
-
-# v8config.h patch — allow ARM target on x64 host
-if [[ -f "$PATCH_DIR/v8config-h.patch" ]] && \
-   [[ -f "deps/v8/include/v8config.h" ]]; then
-  echo "[*] Applying v8config-h.patch..."
-  patch -p1 < "$PATCH_DIR/v8config-h.patch"
-fi
-
-# globals.h patch — fix TAGGED_SIZE_8_BYTES for cross-compilation
-if [[ -f "$PATCH_DIR/globals-h.patch" ]] && \
-   [[ -f "deps/v8/src/common/globals.h" ]]; then
-  echo "[*] Applying globals-h.patch..."
-  patch -p1 < "$PATCH_DIR/globals-h.patch"
-fi
-
-# ─────────────────────────────────────────────
-# Patches (same as original, preserved)
-# ─────────────────────────────────────────────
-
-# Fix LD_LIBRARY_PATH references in generated makefiles
-grep -rl "LD_LIBRARY_PATH=" . \
-  | grep -v Binary \
-  | xargs --no-run-if-empty sed -i "s|LD_LIBRARY_PATH=|LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:|g"
-
-# Ensure epoll.o is linked for libuv
-if grep -q "poll.o \\\\" out/deps/uv/libuv.target.mk 2>/dev/null; then
-  sed -i 's|/poll.o \\|/poll.o \\\n\t$(obj).target/$(TARGET)/deps/uv/src/unix/epoll.o \\|' \
-    out/deps/uv/libuv.target.mk
-fi
-
-# Disable V8 trap handler (not supported on Android cross-compile)
-TRAP_HEADER="deps/v8/src/trap-handler/trap-handler.h"
-if grep -q "Setup for shared library export" "$TRAP_HEADER" 2>/dev/null; then
-  sed -i "s|// Setup for shared library export.|#undef V8_TRAP_HANDLER_VIA_SIMULATOR\n#undef V8_TRAP_HANDLER_SUPPORTED\n#define V8_TRAP_HANDLER_SUPPORTED false\n\n// Setup for shared library export.|" \
-    "$TRAP_HEADER"
+UV_MK="out/deps/uv/libuv.target.mk"
+if [[ -f "$UV_MK" ]] && grep -q "poll.o \\\\" "$UV_MK" && ! grep -q "epoll.o" "$UV_MK"; then
+  echo "[*] Patching libuv epoll linkage..."
+  sed -i 's|/poll.o \\|/poll.o \\\n\t$(obj).target/$(TARGET)/deps/uv/src/unix/epoll.o \\|' "$UV_MK"
 fi
 
 # ─────────────────────────────────────────────
 # Build
 # ─────────────────────────────────────────────
-JOBS="${JOBS:-$(nproc)}"
-echo "[*] Building with $JOBS parallel jobs..."
+echo "[*] Building dengan $JOBS jobs..."
 make -j"$JOBS"
 
 # ─────────────────────────────────────────────
 # Package output
 # ─────────────────────────────────────────────
-echo "[*] Packaging output..."
-mkdir -p "$DIST_DIR"
+echo "[*] Packaging..."
+OUT_DIR="$DIST_DIR/${ME}-android-${ARCH}"
+mkdir -p "$OUT_DIR/lib" "$OUT_DIR/include"
 
-# Copy the shared library
-LIBNODE=$(find out/Release -name "libnode.so" -o -name "libnode.so.*" 2>/dev/null | head -1)
+TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+STRIP_BIN="$TOOLCHAIN/llvm-strip"
+
+# Cari libnode.so
+LIBNODE=$(find out/Release -maxdepth 3 \( -name "libnode.so" -o -name "libnode.so.*" \) 2>/dev/null | head -1)
 if [[ -n "$LIBNODE" ]]; then
-  mkdir -p "$DIST_DIR/$ME-$ARCH/lib"
-  cp -v "$LIBNODE" "$DIST_DIR/$ME-$ARCH/lib/"
-  "$STRIP" --strip-unneeded "$DIST_DIR/$ME-$ARCH/lib/$(basename "$LIBNODE")" || true
+  cp -v "$LIBNODE" "$OUT_DIR/lib/"
+  "$STRIP_BIN" --strip-unneeded "$OUT_DIR/lib/$(basename "$LIBNODE")" 2>/dev/null || \
+    strip --strip-unneeded "$OUT_DIR/lib/$(basename "$LIBNODE")" || true
+  echo "[*] libnode.so size: $(du -sh "$OUT_DIR/lib/$(basename "$LIBNODE")" | cut -f1)"
+else
+  echo "[WARN] libnode.so tidak ditemukan, cek apakah --shared berhasil."
+  find out/Release -maxdepth 3 -name "*.so*" 2>/dev/null || true
 fi
 
 # Copy headers
-if [[ -d "include" ]]; then
-  cp -r include "$DIST_DIR/$ME-$ARCH/"
-fi
+[[ -d "include" ]] && cp -r include/. "$OUT_DIR/include/"
 
-# Create tarball
-cd "$DIST_DIR"
+# Buat tarball
 TAROUT="${ME}-android-${ARCH}.tar.gz"
-tar -czf "$TAROUT" "$ME-$ARCH/"
+mkdir -p "$DIST_DIR"
+cd "$DIST_DIR"
+tar -czf "$TAROUT" "$(basename "$OUT_DIR")/"
+
 echo ""
 echo "======================================"
-echo " Done! Output: $DIST_DIR/$TAROUT"
+echo " DONE!"
+echo " File  : $DIST_DIR/$TAROUT"
+echo " Size  : $(du -sh "$TAROUT" | cut -f1)"
 echo "======================================"
