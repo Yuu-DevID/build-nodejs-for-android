@@ -89,34 +89,42 @@ python3 android-configure patch 2>/dev/null || true
 # ─────────────────────────────────────────────
 PATCH_DIR="$SCRIPT_DIR/.github/scripts"
 
-if [[ -f "$PATCH_DIR/stack_trace_posix.patch" ]] && \
-   [[ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]]; then
-  echo "[*] Applying stack_trace_posix.patch..."
-  patch -p1 < "$PATCH_DIR/stack_trace_posix.patch"
-fi
+apply_patch() {
+  local patch_file="$1"
+  local target_file="$2"
+  if [[ ! -f "$patch_file" ]]; then
+    echo "[SKIP] Patch not found: $patch_file"
+    return 0
+  fi
+  if [[ ! -f "$target_file" ]]; then
+    echo "[SKIP] Target not found: $target_file"
+    return 0
+  fi
+  echo "[*] Applying $(basename "$patch_file")..."
+  if patch -p1 --dry-run < "$patch_file" >/dev/null 2>&1; then
+    patch -p1 < "$patch_file"
+    echo "[OK] $(basename "$patch_file") applied"
+  else
+    echo "[WARN] $(basename "$patch_file") does not apply cleanly — skipping"
+  fi
+}
 
-if [[ -f "$PATCH_DIR/v8config-h.patch" ]] && \
-   [[ -f "deps/v8/include/v8config.h" ]]; then
-  echo "[*] Applying v8config-h.patch..."
-  patch -p1 < "$PATCH_DIR/v8config-h.patch"
-fi
+apply_patch "$PATCH_DIR/stack_trace_posix.patch" \
+            "deps/v8/src/base/debug/stack_trace_posix.cc"
+
+apply_patch "$PATCH_DIR/v8config-h.patch" \
+            "deps/v8/include/v8config.h"
 
 # globals-h.patch: relaxed cross-compilation assertion in globals.h
 # Host tools have kTaggedSize=8 (x86_64) but TAGGED_SIZE_8_BYTES=false
 # (ARM target), causing static_assert failure during cross-compilation
-if [[ -f "$PATCH_DIR/globals-h.patch" ]] && \
-   [[ -f "deps/v8/src/common/globals.h" ]]; then
-  echo "[*] Applying globals-h.patch..."
-  patch -p1 < "$PATCH_DIR/globals-h.patch"
-fi
+apply_patch "$PATCH_DIR/globals-h.patch" \
+            "deps/v8/src/common/globals.h"
 
 # builtins-iterator.patch: GCC evaluates static_assert in discarded
 # if constexpr branches (GCC bug). Replace static_assert with if constexpr.
-if [[ -f "$PATCH_DIR/builtins-iterator.patch" ]] && \
-   [[ -f "deps/v8/src/builtins/builtins-iterator-inl.h" ]]; then
-  echo "[*] Applying builtins-iterator.patch..."
-  patch -p1 < "$PATCH_DIR/builtins-iterator.patch"
-fi
+apply_patch "$PATCH_DIR/builtins-iterator.patch" \
+            "deps/v8/src/builtins/builtins-iterator-inl.h"
 
 # ─────────────────────────────────────────────
 # Configure for Android cross-compilation
