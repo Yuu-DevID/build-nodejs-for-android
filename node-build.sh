@@ -6,7 +6,7 @@ set -euo pipefail
 # ─────────────────────────────────────────────
 NODE_VERSION="${NODE_VERSION:-26.2.0}"
 ME="node-v${NODE_VERSION}"
-NDK="${NDK:-/github/build-nodejs/android-ndk-r29b}"
+NDK="${NDK:-/github/build-nodejs/android-ndk-r29}"
 ENVHOST="${ENVHOST:-linux-x86_64}"
 ENVTARGET="${ENVTARGET:-aarch64-linux-android}"
 ENVANDROIDVER="${ENVANDROIDVER:-24}"
