@@ -1,0 +1,205 @@
+name: Build Node.js for Android
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: "Node.js version to build"
+        required: true
+        default: "22.13.1"
+      architectures:
+        description: "Architectures (comma-separated: arm64,arm,x86,x64)"
+        required: true
+        default: "arm64,arm,x64"
+
+env:
+  NDK_VERSION: r23b
+  NDK_PATH: ${{ github.workspace }}/android-ndk-r23b
+  DEFAULT_NODE_VERSION: "22.13.1"
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Matrix preparation
+  # ─────────────────────────────────────────────
+  prepare:
+    name: Prepare Build Matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      node_version: ${{ steps.set-matrix.outputs.node_version }}
+    steps:
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          NODE_VERSION="${{ github.event.inputs.node_version || env.DEFAULT_NODE_VERSION }}"
+          ARCHS="${{ github.event.inputs.architectures || 'arm64,arm,x64' }}"
+
+          # Build JSON matrix from comma-separated arch list
+          MATRIX_JSON='{"include":['
+          FIRST=true
+          IFS=',' read -ra ARCH_LIST <<< "$ARCHS"
+          for ARCH in "${ARCH_LIST[@]}"; do
+            ARCH=$(echo "$ARCH" | xargs)  # trim whitespace
+            case "$ARCH" in
+              arm64)
+                TARGET="aarch64-linux-android"
+                ;;
+              arm)
+                TARGET="armv7a-linux-androideabi"
+                ;;
+              x86)
+                TARGET="i686-linux-android"
+                ;;
+              x64)
+                TARGET="x86_64-linux-android"
+                ;;
+              *)
+                echo "Unknown arch: $ARCH, skipping."
+                continue
+                ;;
+            esac
+            [[ "$FIRST" == "true" ]] && FIRST=false || MATRIX_JSON+=','
+            MATRIX_JSON+="{\"arch\":\"$ARCH\",\"target\":\"$TARGET\"}"
+          done
+          MATRIX_JSON+=']}'
+
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo "node_version=$NODE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $MATRIX_JSON"
+
+  # ─────────────────────────────────────────────
+  # Build job (runs once per arch)
+  # ─────────────────────────────────────────────
+  build:
+    name: Build Node.js ${{ needs.prepare.outputs.node_version }} [${{ matrix.arch }}]
+    needs: prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Cache: NDK ──────────────────────────────
+      - name: Cache Android NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NDK_PATH }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Download Android NDK
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q "android-ndk-${NDK_VERSION}-linux.zip"
+          rm "android-ndk-${NDK_VERSION}-linux.zip"
+
+      # ── Cache: Node.js source tarball ──────────
+      - name: Cache Node.js source
+        id: cache-node-src
+        uses: actions/cache@v4
+        with:
+          path: /tmp/node-src-cache
+          key: nodejs-src-${{ needs.prepare.outputs.node_version }}
+
+      - name: Download Node.js source
+        if: steps.cache-node-src.outputs.cache-hit != 'true'
+        run: |
+          NODE_VERSION="${{ needs.prepare.outputs.node_version }}"
+          mkdir -p /tmp/node-src-cache
+          curl -fL --retry 3 \
+            -o "/tmp/node-src-cache/node-v${NODE_VERSION}.tar.gz" \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}.tar.gz"
+
+      # ── System dependencies ─────────────────────
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip \
+            gcc g++ make \
+            curl git
+
+      # ── Build ───────────────────────────────────
+      - name: Build Node.js for ${{ matrix.arch }}
+        env:
+          NODE_VERSION: ${{ needs.prepare.outputs.node_version }}
+          NDK: ${{ env.NDK_PATH }}
+          ENVHOST: linux-x86_64
+          ENVTARGET: ${{ matrix.target }}
+          ENVANDROIDVER: "23"
+          DIST_DIR: ${{ github.workspace }}/output
+          JOBS: "4"
+        run: |
+          # Copy cached source tarball to working area
+          mkdir -p /tmp/node-build
+          cp "/tmp/node-src-cache/node-v${NODE_VERSION}.tar.gz" /tmp/node-build/
+
+          chmod +x node-build.sh
+          bash node-build.sh
+
+      # ── Upload artifact ─────────────────────────
+      - name: Upload artifact [${{ matrix.arch }}]
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-${{ needs.prepare.outputs.node_version }}-android-${{ matrix.arch }}
+          path: output/node-v${{ needs.prepare.outputs.node_version }}-android-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────
+  # Release (only on tag push)
+  # ─────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Node.js ${{ needs.prepare.outputs.node_version }} for Android"
+          body: |
+            ## Node.js ${{ needs.prepare.outputs.node_version }} — Android Binaries
+
+            Built with Android NDK ${{ env.NDK_VERSION }}, API level 23.
+
+            | File | Architecture |
+            |------|-------------|
+            | `node-v${{ needs.prepare.outputs.node_version }}-android-arm64.tar.gz` | arm64-v8a |
+            | `node-v${{ needs.prepare.outputs.node_version }}-android-arm.tar.gz`   | armeabi-v7a |
+            | `node-v${{ needs.prepare.outputs.node_version }}-android-x64.tar.gz`   | x86_64 |
+
+            ### Contents
+            Each archive contains:
+            - `lib/libnode.so` — stripped shared library
+            - `include/` — Node.js + V8 headers
+
+            ### Usage on Android
+            ```bash
+            export LD_LIBRARY_PATH=/path/to/lib:$LD_LIBRARY_PATH
+            ```
+          files: release-assets/*.tar.gz
+          draft: false
+          prerelease: false
