@@ -128,7 +128,8 @@ export CXX_host="$(which g++)"
 export GYP_DEFINES="target_arch=$DEST_CPU v8_target_arch=$DEST_CPU android_target_arch=$DEST_CPU host_os=linux OS=android android_ndk_path=$NDK v8_enable_pointer_compression=1 v8_enable_31bit_smis_on_64bit_arch=1"
 
 echo "[*] Configuring for $DEST_CPU (Android SDK $ANDROID_SDK_VER) ..."
-./configure --dest-cpu="$DEST_CPU" --dest-os=android --openssl-no-asm --cross-compiling
+./configure --dest-cpu="$DEST_CPU" --dest-os=android --openssl-no-asm --cross-compiling \
+  --experimental-enable-pointer-compression
 
 # ─────────────────────────────────────────────
 # Build
