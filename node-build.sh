@@ -108,18 +108,10 @@ fi
 # Configure via android-configure resmi Node.js
 # Format: android-configure <NDK_PATH> <SDK_VER> <ARCH>
 # android-configure juga set GYP_DEFINES + CC/CXX otomatis
+# (termasuk OS=android, jadi libuv pilih source yg benar)
 # ─────────────────────────────────────────────
 echo "[*] Running android-configure $NDK $ANDROID_SDK_VER $ARCH ..."
 python3 android-configure "$NDK" "$ANDROID_SDK_VER" "$ARCH"
-
-# ─────────────────────────────────────────────
-# Post-configure patch: epoll linkage untuk libuv
-# ─────────────────────────────────────────────
-UV_MK="out/deps/uv/libuv.target.mk"
-if [[ -f "$UV_MK" ]] && grep -q "poll.o \\\\" "$UV_MK" && ! grep -q "epoll.o" "$UV_MK"; then
-  echo "[*] Patching libuv epoll linkage..."
-  sed -i 's|/poll.o \\|/poll.o \\\n\t$(obj).target/$(TARGET)/deps/uv/src/unix/epoll.o \\|' "$UV_MK"
-fi
 
 # ─────────────────────────────────────────────
 # Build
