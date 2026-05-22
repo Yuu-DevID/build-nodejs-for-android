@@ -11,16 +11,16 @@ on:
       node_version:
         description: "Node.js version to build"
         required: true
-        default: "22.13.1"
+        default: "26.2.0"
       architectures:
         description: "Architectures (comma-separated: arm64,arm,x86,x64)"
         required: true
         default: "arm64,arm,x64"
 
 env:
-  NDK_VERSION: r23b
-  NDK_PATH: ${{ github.workspace }}/android-ndk-r23b
-  DEFAULT_NODE_VERSION: "22.13.1"
+  NDK_VERSION: r29b
+  NDK_PATH: ${{ github.workspace }}/android-ndk-r29b
+  DEFAULT_NODE_VERSION: "26.2.0"
 
 jobs:
   # ─────────────────────────────────────────────
@@ -135,7 +135,7 @@ jobs:
           NDK: ${{ env.NDK_PATH }}
           ENVHOST: linux-x86_64
           ENVTARGET: ${{ matrix.target }}
-          ENVANDROIDVER: "23"
+          ENVANDROIDVER: "24"
           DIST_DIR: ${{ github.workspace }}/output
           JOBS: "4"
         run: |
@@ -183,7 +183,7 @@ jobs:
           body: |
             ## Node.js ${{ needs.prepare.outputs.node_version }} — Android Binaries
 
-            Built with Android NDK ${{ env.NDK_VERSION }}, API level 23.
+            Built with Android NDK ${{ env.NDK_VERSION }}, API level 24.
 
             | File | Architecture |
             |------|-------------|

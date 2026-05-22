@@ -4,12 +4,12 @@ set -euo pipefail
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
-NODE_VERSION="${NODE_VERSION:-22.13.1}"
+NODE_VERSION="${NODE_VERSION:-26.2.0}"
 ME="node-v${NODE_VERSION}"
-NDK="${NDK:-/github/build-nodejs/android-ndk-r23b}"
+NDK="${NDK:-/github/build-nodejs/android-ndk-r29b}"
 ENVHOST="${ENVHOST:-linux-x86_64}"
 ENVTARGET="${ENVTARGET:-aarch64-linux-android}"
-ENVANDROIDVER="${ENVANDROIDVER:-23}"
+ENVANDROIDVER="${ENVANDROIDVER:-24}"
 DIST_DIR="${DIST_DIR:-/output}"
 
 MEDIR="$(cd "$(dirname "$0")"; pwd)"
@@ -110,6 +110,7 @@ export GYP_DEFINES="target_arch=$ARCH"
 GYP_DEFINES+=" v8_target_arch=$ARCH"
 GYP_DEFINES+=" android_target_arch=$ARCH"
 GYP_DEFINES+=" host_os=linux OS=android"
+GYP_DEFINES+=" android_ndk_path=$NDK"
 export GYP_DEFINES
 
 # ─────────────────────────────────────────────
@@ -120,10 +121,36 @@ echo "[*] Running configure..."
   --prefix="$DIST_DIR/$ME-$ARCH" \
   --dest-cpu="$DEST_CPU" \
   --dest-os=android \
-  --without-snapshot \
   --openssl-no-asm \
   --cross-compiling \
   --shared
+
+# ─────────────────────────────────────────────
+# V8 patches for Android cross-compilation
+# ─────────────────────────────────────────────
+
+PATCH_DIR="$MEDIR/.github/scripts"
+
+# V8 stack_trace patch — fixes backtrace on Android Bionic
+if [[ -f "$PATCH_DIR/stack_trace_posix.patch" ]] && \
+   [[ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]]; then
+  echo "[*] Applying stack_trace_posix.patch..."
+  patch -p1 < "$PATCH_DIR/stack_trace_posix.patch"
+fi
+
+# v8config.h patch — allow ARM target on x64 host
+if [[ -f "$PATCH_DIR/v8config-h.patch" ]] && \
+   [[ -f "deps/v8/include/v8config.h" ]]; then
+  echo "[*] Applying v8config-h.patch..."
+  patch -p1 < "$PATCH_DIR/v8config-h.patch"
+fi
+
+# globals.h patch — fix TAGGED_SIZE_8_BYTES for cross-compilation
+if [[ -f "$PATCH_DIR/globals-h.patch" ]] && \
+   [[ -f "deps/v8/src/common/globals.h" ]]; then
+  echo "[*] Applying globals-h.patch..."
+  patch -p1 < "$PATCH_DIR/globals-h.patch"
+fi
 
 # ─────────────────────────────────────────────
 # Patches (same as original, preserved)
