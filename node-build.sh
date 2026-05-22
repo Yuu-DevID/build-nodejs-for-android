@@ -66,11 +66,43 @@ tar -xzf "$TARBALL"
 cd "$ME"
 
 # ─────────────────────────────────────────────
+# Host compilers (WAJIB sebelum android-configure)
+# android-configure set CC/CXX ke NDK cross-compiler,
+# tapi host tools (icupkg, mksnapshot) butuh compiler host x86_64
+# ─────────────────────────────────────────────
+export CC_host="$(which gcc)"
+export CXX_host="$(which g++)"
+
+# ─────────────────────────────────────────────
 # Patch trap-handler sebelum configure
 # (Node menyediakan patch resmi via android-patches/)
 # ─────────────────────────────────────────────
 echo "[*] Applying android patches..."
 python3 android-configure patch 2>/dev/null || true
+
+# ─────────────────────────────────────────────
+# V8 patches untuk Android cross-compilation
+# ─────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCH_DIR="$SCRIPT_DIR/.github/scripts"
+
+if [[ -f "$PATCH_DIR/stack_trace_posix.patch" ]] && \
+   [[ -f "deps/v8/src/base/debug/stack_trace_posix.cc" ]]; then
+  echo "[*] Applying stack_trace_posix.patch..."
+  patch -p1 < "$PATCH_DIR/stack_trace_posix.patch"
+fi
+
+if [[ -f "$PATCH_DIR/v8config-h.patch" ]] && \
+   [[ -f "deps/v8/include/v8config.h" ]]; then
+  echo "[*] Applying v8config-h.patch..."
+  patch -p1 < "$PATCH_DIR/v8config-h.patch"
+fi
+
+if [[ -f "$PATCH_DIR/globals-h.patch" ]] && \
+   [[ -f "deps/v8/src/common/globals.h" ]]; then
+  echo "[*] Applying globals-h.patch..."
+  patch -p1 < "$PATCH_DIR/globals-h.patch"
+fi
 
 # ─────────────────────────────────────────────
 # Configure via android-configure resmi Node.js
