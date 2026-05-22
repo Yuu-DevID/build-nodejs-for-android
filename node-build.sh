@@ -143,14 +143,21 @@ export CXX="$TOOLCHAIN_PATH/bin/${TOOLCHAIN_PREFIX}${ANDROID_SDK_VER}-clang++"
 export CC_host="$(which gcc)"
 export CXX_host="$(which g++)"
 
-# Set GYP_DEFINES same as android_configure.py, plus pointer compression
-# Pointer compression forces 32-bit Smis on host+target, fixing the
-# kTaggedSize/SmiValuesAre31Bits assertion failures in host tools
-export GYP_DEFINES="target_arch=$DEST_CPU v8_target_arch=$DEST_CPU android_target_arch=$DEST_CPU host_os=linux OS=android android_ndk_path=$NDK v8_enable_pointer_compression=1 v8_enable_31bit_smis_on_64bit_arch=1"
+# Set GYP_DEFINES same as android_configure.py
+export GYP_DEFINES="target_arch=$DEST_CPU v8_target_arch=$DEST_CPU android_target_arch=$DEST_CPU host_os=linux OS=android android_ndk_path=$NDK"
+
+# Pointer compression: only for 64-bit targets (arm64, x86_64).
+# On 32-bit targets (arm), host tools (x86_64) get TAGGED_SIZE_8_BYTES=false
+# from the target, causing static_assert failures since kTaggedSize=8 on host.
+CONFIGURE_EXTRA=""
+if [[ "$DEST_CPU" == "arm64" || "$DEST_CPU" == "x64" ]]; then
+  export GYP_DEFINES="$GYP_DEFINES v8_enable_pointer_compression=1 v8_enable_31bit_smis_on_64bit_arch=1"
+  CONFIGURE_EXTRA="--experimental-enable-pointer-compression"
+fi
 
 echo "[*] Configuring for $DEST_CPU (Android SDK $ANDROID_SDK_VER) ..."
 ./configure --dest-cpu="$DEST_CPU" --dest-os=android --openssl-no-asm --cross-compiling \
-  --experimental-enable-pointer-compression
+  $CONFIGURE_EXTRA
 
 # ─────────────────────────────────────────────
 # Build
