@@ -106,13 +106,30 @@ fi
 # assertion in assembler.h). android-configure handles arch config correctly.
 
 # ─────────────────────────────────────────────
-# Configure via android-configure resmi Node.js
-# Format: android-configure <NDK_PATH> <SDK_VER> <ARCH>
-# android-configure juga set GYP_DEFINES + CC/CXX otomatis
-# (termasuk OS=android, jadi libuv pilih source yg benar)
+# Configure for Android cross-compilation
 # ─────────────────────────────────────────────
-echo "[*] Running android-configure $NDK $ANDROID_SDK_VER $ARCH ..."
-python3 android-configure "$NDK" "$ANDROID_SDK_VER" "$ARCH"
+# Map arch to DEST_CPU and toolchain prefix
+case "$ARCH" in
+  arm64)   DEST_CPU="arm64";  TOOLCHAIN_PREFIX="aarch64-linux-android" ;;
+  arm)     DEST_CPU="arm";    TOOLCHAIN_PREFIX="armv7a-linux-androideabi" ;;
+  x86)     DEST_CPU="ia32";   TOOLCHAIN_PREFIX="i686-linux-android" ;;
+  x86_64)  DEST_CPU="x64";    TOOLCHAIN_PREFIX="x86_64-linux-android" ;;
+esac
+
+TOOLCHAIN_PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+export CC="$TOOLCHAIN_PATH/bin/${TOOLCHAIN_PREFIX}${ANDROID_SDK_VER}-clang"
+export CXX="$TOOLCHAIN_PATH/bin/${TOOLCHAIN_PREFIX}${ANDROID_SDK_VER}-clang++"
+export CC_host="$(which gcc)"
+export CXX_host="$(which g++)"
+
+# Set GYP_DEFINES same as android_configure.py, plus pointer compression
+# Pointer compression forces 32-bit Smis on host+target, fixing the
+# kTaggedSize/SmiValuesAre31Bits assertion failures in host tools
+export GYP_DEFINES="target_arch=$DEST_CPU v8_target_arch=$DEST_CPU android_target_arch=$DEST_CPU host_os=linux OS=android android_ndk_path=$NDK v8_enable_pointer_compression=1 v8_enable_31bit_smis_on_64bit_arch=1"
+
+echo "[*] Configuring for $DEST_CPU (Android SDK $ANDROID_SDK_VER) ..."
+./configure --dest-cpu="$DEST_CPU" --dest-os=android --openssl-no-asm --cross-compiling \
+  --enable-pointer-compression
 
 # ─────────────────────────────────────────────
 # Build
