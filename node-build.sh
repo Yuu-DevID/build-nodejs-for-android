@@ -101,9 +101,22 @@ if [[ -f "$PATCH_DIR/v8config-h.patch" ]] && \
   patch -p1 < "$PATCH_DIR/v8config-h.patch"
 fi
 
-# globals-h.patch removed: it changed TAGGED_SIZE_8_BYTES to use
-# __SIZEOF_POINTER__ which breaks host x86_64 builds (SmiValuesAre31Bits
-# assertion in assembler.h). android-configure handles arch config correctly.
+# globals-h.patch: relaxed cross-compilation assertion in globals.h
+# Host tools have kTaggedSize=8 (x86_64) but TAGGED_SIZE_8_BYTES=false
+# (ARM target), causing static_assert failure during cross-compilation
+if [[ -f "$PATCH_DIR/globals-h.patch" ]] && \
+   [[ -f "deps/v8/src/common/globals.h" ]]; then
+  echo "[*] Applying globals-h.patch..."
+  patch -p1 < "$PATCH_DIR/globals-h.patch"
+fi
+
+# builtins-iterator.patch: GCC evaluates static_assert in discarded
+# if constexpr branches (GCC bug). Replace static_assert with if constexpr.
+if [[ -f "$PATCH_DIR/builtins-iterator.patch" ]] && \
+   [[ -f "deps/v8/src/builtins/builtins-iterator-inl.h" ]]; then
+  echo "[*] Applying builtins-iterator.patch..."
+  patch -p1 < "$PATCH_DIR/builtins-iterator.patch"
+fi
 
 # ─────────────────────────────────────────────
 # Configure for Android cross-compilation
