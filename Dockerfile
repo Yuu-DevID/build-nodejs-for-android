@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV NDK_VERSION=r29b
+ENV NDK_VERSION=r29
 ENV NDK=/github/build-nodejs/android-ndk-${NDK_VERSION}
 
 WORKDIR /github/build-nodejs
