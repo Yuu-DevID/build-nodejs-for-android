@@ -1,9 +1,6 @@
 --- a/deps/v8/src/builtins/builtins-iterator-inl.h
 +++ b/deps/v8/src/builtins/builtins-iterator-inl.h
-@@ -272,10 +272,9 @@
-         } else if constexpr (std::is_floating_point_v<ctype>) {             \
-           if (!double_visitor(val)) {                                       \
-             return MaybeDirectHandle<Object>();                             \
+@@ -272,8 +272,7 @@
            }                                                                 \
 -        } else {                                                            \
 -          static_assert(std::numeric_limits<ctype>::max() <=                \
@@ -16,4 +13,3 @@
 +                             std::numeric_limits<int>::min()) {             \
            if (!int_visitor(static_cast<int>(val))) {                        \
              return MaybeDirectHandle<Object>();                             \
-           }                                                                 \

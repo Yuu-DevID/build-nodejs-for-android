@@ -1,9 +1,8 @@
 --- a/deps/v8/src/common/globals.h
 +++ b/deps/v8/src/common/globals.h
-@@ -617,4 +617,5 @@
- static_assert(kSmiValuesAre31Bits == SmiValuesAre31Bits());
- #endif
- 
+@@ -618,3 +618,5 @@
+ static_assert(kTaggedSize == (1 << kTaggedSizeLog2));
 -static_assert((kTaggedSize == 8) == TAGGED_SIZE_8_BYTES);
++
 +// Relaxed for cross-compilation: host tools may have different kTaggedSize
 +// static_assert((kTaggedSize == 8) == TAGGED_SIZE_8_BYTES);
