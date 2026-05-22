@@ -18,8 +18,8 @@ on:
         default: "arm64,arm,x64"
 
 env:
-  NDK_VERSION: r29b
-  NDK_PATH: ${{ github.workspace }}/android-ndk-r29b
+  NDK_VERSION: r29
+  NDK_PATH: ${{ github.workspace }}/android-ndk-r29
   DEFAULT_NODE_VERSION: "26.2.0"
 
 jobs:
