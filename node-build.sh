@@ -18,6 +18,10 @@ JOBS="${JOBS:-$(nproc)}"
 # ─────────────────────────────────────────────
 # Validate
 # ─────────────────────────────────────────────
+
+# Capture repo dir BEFORE any cd (patches live here)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 if [[ ! -d "$NDK" ]]; then
   echo "[ERROR] NDK not found: $NDK"
   echo "        Set env var NDK= ke path yang benar."
@@ -83,7 +87,6 @@ python3 android-configure patch 2>/dev/null || true
 # ─────────────────────────────────────────────
 # V8 patches untuk Android cross-compilation
 # ─────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_DIR="$SCRIPT_DIR/.github/scripts"
 
 if [[ -f "$PATCH_DIR/stack_trace_posix.patch" ]] && \
@@ -98,11 +101,9 @@ if [[ -f "$PATCH_DIR/v8config-h.patch" ]] && \
   patch -p1 < "$PATCH_DIR/v8config-h.patch"
 fi
 
-if [[ -f "$PATCH_DIR/globals-h.patch" ]] && \
-   [[ -f "deps/v8/src/common/globals.h" ]]; then
-  echo "[*] Applying globals-h.patch..."
-  patch -p1 < "$PATCH_DIR/globals-h.patch"
-fi
+# globals-h.patch removed: it changed TAGGED_SIZE_8_BYTES to use
+# __SIZEOF_POINTER__ which breaks host x86_64 builds (SmiValuesAre31Bits
+# assertion in assembler.h). android-configure handles arch config correctly.
 
 # ─────────────────────────────────────────────
 # Configure via android-configure resmi Node.js
