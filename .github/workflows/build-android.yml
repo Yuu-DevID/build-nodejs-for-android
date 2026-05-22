@@ -68,7 +68,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node-src
-          key: node-src-${{ env.NODE_VERSION }}-v3
+          key: node-src-${{ env.NODE_VERSION }}-v4
 
       - name: Clone Node.js ${{ env.NODE_VERSION }}
         if: steps.cache-src.outputs.cache-hit != 'true'
@@ -132,7 +132,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node-src
-          key: node-src-${{ env.NODE_VERSION }}-v3
+          key: node-src-${{ env.NODE_VERSION }}-v4
 
       # ── Restore NDK ─────────────────────────────────────────────────────────
       - name: Restore NDK cache
